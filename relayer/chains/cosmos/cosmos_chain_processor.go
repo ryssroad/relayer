@@ -66,6 +66,9 @@ const (
 
 	defaultMinQueryLoopDuration = 1 * time.Second
 	inSyncNumBlocksThreshold    = 2
+
+	blockQueryRetryDelay = 200 * time.Millisecond
+	blockQueryRetries    = 10
 )
 
 type msgHandlerParams struct {
@@ -118,6 +121,68 @@ func (ccp *CosmosChainProcessor) latestHeightWithRetry(ctx context.Context) (lat
 			zap.Error(err),
 		)
 	}))
+}
+
+// blockResultsWithRetry will query for block data, retrying with a longer timeout in case of failure.
+// It will delay by latestHeightQueryRetryDelay between attempts, up to latestHeightQueryRetries.
+func (ccp *CosmosChainProcessor) queryBlockResultsWithRetry(
+	ctx context.Context,
+	height int64,
+) (blockRes *ctypes.ResultBlockResults, err error) {
+	timeout := queryTimeout
+	return blockRes, retry.Do(func() error {
+		queryCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		var err error
+		blockRes, err = ccp.chainProvider.RPCClient.BlockResults(queryCtx, &height)
+		return err
+	},
+		retry.Context(ctx),
+		retry.Attempts(blockQueryRetries),
+		retry.Delay(blockQueryRetryDelay),
+		retry.DelayType(retry.FixedDelay),
+		retry.LastErrorOnly(true),
+		retry.OnRetry(func(n uint, err error) {
+			timeout *= 2
+			ccp.log.Error(
+				"Failed to query block results",
+				zap.Uint("attempt", n+1),
+				zap.Uint("max_attempts", blockQueryRetries),
+				zap.Error(err),
+			)
+		}),
+	)
+}
+
+// ibcHeaderWithRetry will query for a block ibc header, retrying with a longer timeout in case of failure.
+// It will delay by latestHeightQueryRetryDelay between attempts, up to latestHeightQueryRetries.
+func (ccp *CosmosChainProcessor) queryIBCHeaderWithRetry(
+	ctx context.Context,
+	height int64,
+) (ibcHeader provider.IBCHeader, err error) {
+	timeout := queryTimeout
+	return ibcHeader, retry.Do(func() error {
+		queryCtx, cancel := context.WithTimeout(ctx, queryTimeout)
+		defer cancel()
+		var err error
+		ibcHeader, err = ccp.chainProvider.IBCHeaderAtHeight(queryCtx, height)
+		return err
+	},
+		retry.Context(ctx),
+		retry.Attempts(blockQueryRetries),
+		retry.Delay(blockQueryRetryDelay),
+		retry.DelayType(retry.BackOffDelay),
+		retry.LastErrorOnly(true),
+		retry.OnRetry(func(n uint, err error) {
+			timeout *= 2
+			ccp.log.Error(
+				"Failed to query IBC header",
+				zap.Uint("attempt", n+1),
+				zap.Uint("max_attempts", blockQueryRetries),
+				zap.Error(err),
+			)
+		}),
+	)
 }
 
 // clientState will return the most recent client state if client messages
@@ -304,15 +369,11 @@ func (ccp *CosmosChainProcessor) queryCycle(ctx context.Context, persistence *qu
 		var blockRes *ctypes.ResultBlockResults
 		var ibcHeader provider.IBCHeader
 		eg.Go(func() (err error) {
-			queryCtx, cancelQueryCtx := context.WithTimeout(ctx, queryTimeout)
-			defer cancelQueryCtx()
-			blockRes, err = ccp.chainProvider.RPCClient.BlockResults(queryCtx, &i)
+			blockRes, err = ccp.queryBlockResultsWithRetry(ctx, i)
 			return err
 		})
 		eg.Go(func() (err error) {
-			queryCtx, cancelQueryCtx := context.WithTimeout(ctx, queryTimeout)
-			defer cancelQueryCtx()
-			ibcHeader, err = ccp.chainProvider.IBCHeaderAtHeight(queryCtx, i)
+			ibcHeader, err = ccp.queryIBCHeaderWithRetry(ctx, i)
 			return err
 		})
 
