@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	conntypes "github.com/cosmos/ibc-go/v3/modules/core/03-connection/types"
+	conntypes "github.com/cosmos/ibc-go/v5/modules/core/03-connection/types"
 	"github.com/cosmos/relayer/v2/relayer/processor"
 	"github.com/cosmos/relayer/v2/relayer/provider"
 	"go.uber.org/zap"
@@ -18,6 +18,8 @@ func (c *Chain) CreateOpenConnections(
 	maxRetries uint64,
 	timeout time.Duration,
 	memo string,
+	initialBlockHistory uint64,
+	pathName string,
 ) (modified bool, err error) {
 	// client identifiers must be filled in
 	if err = ValidateClientPaths(c, dst); err != nil {
@@ -26,11 +28,11 @@ func (c *Chain) CreateOpenConnections(
 
 	srcpathChain := pathChain{
 		provider: c.ChainProvider,
-		pathEnd:  processor.NewPathEnd(c.PathEnd.ChainID, c.PathEnd.ClientID, "", []processor.ChannelKey{}),
+		pathEnd:  processor.NewPathEnd(pathName, c.PathEnd.ChainID, c.PathEnd.ClientID, "", []processor.ChannelKey{}),
 	}
 	dstpathChain := pathChain{
 		provider: dst.ChainProvider,
-		pathEnd:  processor.NewPathEnd(dst.PathEnd.ChainID, dst.PathEnd.ClientID, "", []processor.ChannelKey{}),
+		pathEnd:  processor.NewPathEnd(pathName, dst.PathEnd.ChainID, dst.PathEnd.ClientID, "", []processor.ChannelKey{}),
 	}
 
 	// Timeout is per message. Four connection handshake messages, allowing maxRetries for each.
@@ -43,6 +45,7 @@ func (c *Chain) CreateOpenConnections(
 		c.log,
 		srcpathChain.pathEnd,
 		dstpathChain.pathEnd,
+		nil,
 		memo,
 	)
 
@@ -65,7 +68,7 @@ func (c *Chain) CreateOpenConnections(
 			dstpathChain.chainProcessor(c.log),
 		).
 		WithPathProcessors(pp).
-		WithInitialBlockHistory(0).
+		WithInitialBlockHistory(initialBlockHistory).
 		WithMessageLifecycle(&processor.ConnectionMessageLifecycle{
 			Initial: &processor.ConnectionMessage{
 				ChainID:   c.PathEnd.ChainID,

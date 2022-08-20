@@ -8,16 +8,10 @@ import (
 	"path"
 	"strings"
 
-	"github.com/cespare/permute/v2"
 	"github.com/cosmos/relayer/v2/relayer"
 	"github.com/google/go-github/v43/github"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
-)
-
-const (
-	REPOURL  = "https://github.com/cosmos/relayer"
-	PATHSURL = "https://github.com/cosmos/relayer/tree/main/interchain"
 )
 
 func pathsCmd(a *appState) *cobra.Command {
@@ -220,9 +214,9 @@ func pathsAddDirCmd(a *appState) *cobra.Command {
 		Short: `Add path configuration data in bulk from a directory. Example dir: 'configs/demo/paths'`,
 		Long: `Add path configuration data in bulk from a directory housing individual path config files. This is useful for spinning up testnets.
 		
-		See 'configs/demo/paths' for an example of individual path config files.`,
+		See 'examples/demo/configs/paths' for an example of individual path config files.`,
 		Example: strings.TrimSpace(fmt.Sprintf(`
-$ %s config add-paths configs/paths`, appName)),
+$ %s config add-paths examples/demo/configs/paths`, appName)),
 		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			if err := addPathsFromDirectory(cmd.Context(), cmd.ErrOrStderr(), a, args[0]); err != nil {
 				return err
@@ -285,20 +279,22 @@ $ %s pth fch`, appName, defaultHome, appName)),
 			}
 
 			// find all combinations of paths for configured chains
-			// note: path file names on the chain-registry are in alphabetical order ex: achain-zchain.json
-			p := permute.Slice(chains)
 			chainCombinations := make(map[string]bool)
-			for p.Permute() {
-				a, b := chains[0], chains[1]
-				pair := a + "-" + b
-				if b < a {
-					pair = b + "-" + a
+			for _, chainA := range chains {
+				for _, chainB := range chains {
+					if chainA == chainB {
+						continue
+					}
+
+					pair := chainA + "-" + chainB
+					if chainB < chainA {
+						pair = chainB + "-" + chainA
+					}
+					chainCombinations[pair] = true
 				}
-				chainCombinations[pair] = true
 			}
 
 			client := github.NewClient(nil)
-
 			for pthName := range chainCombinations {
 				_, exist := a.Config.Paths[pthName]
 				if exist && !overwrite {
@@ -312,7 +308,8 @@ $ %s pth fch`, appName, defaultHome, appName)),
 				client, _, err := client.Repositories.DownloadContents(cmd.Context(), "cosmos", "chain-registry", regPath, nil)
 				if err != nil {
 					if errors.As(err, new(*github.RateLimitError)) {
-						return fmt.Errorf("error message: %w", err)
+						fmt.Println("some paths failed: ", err)
+						break
 					}
 					fmt.Fprintf(cmd.ErrOrStderr(), "failure retrieving: %s: consider adding to cosmos/chain-registry: ERR: %v\n", pthName, err)
 					continue
