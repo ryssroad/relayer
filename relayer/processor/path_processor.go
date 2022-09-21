@@ -138,10 +138,7 @@ func (pp *PathProcessor) channelPairs() []channelPair {
 	}
 	pairs := make([]channelPair, len(channels))
 	i := 0
-	for k, open := range channels {
-		if !open {
-			continue
-		}
+	for k, _ := range channels {
 		pairs[i] = channelPair{
 			pathEnd1ChannelKey: k,
 			pathEnd2ChannelKey: k.Counterparty(),
@@ -169,9 +166,9 @@ func (pp *PathProcessor) SetChainProviderIfApplicable(chainProvider provider.Cha
 
 func (pp *PathProcessor) IsRelayedChannel(chainID string, channelKey ChannelKey) bool {
 	if pp.pathEnd1.info.ChainID == chainID {
-		return pp.pathEnd1.info.ShouldRelayChannel(channelKey)
+		return pp.pathEnd1.info.ShouldRelayChannel(ChainChannelKey{ChainID: chainID, ChannelKey: channelKey})
 	} else if pp.pathEnd2.info.ChainID == chainID {
-		return pp.pathEnd2.info.ShouldRelayChannel(channelKey)
+		return pp.pathEnd2.info.ShouldRelayChannel(ChainChannelKey{ChainID: chainID, ChannelKey: channelKey})
 	}
 	return false
 }
