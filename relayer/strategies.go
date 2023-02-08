@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/avast/retry-go/v4"
-	"github.com/cosmos/ibc-go/v5/modules/core/04-channel/types"
+	"github.com/cosmos/ibc-go/v7/modules/core/04-channel/types"
 	"github.com/cosmos/relayer/v2/relayer/chains/cosmos"
 	"github.com/cosmos/relayer/v2/relayer/processor"
 	"go.uber.org/zap"
@@ -22,8 +22,9 @@ type ActiveChannel struct {
 }
 
 const (
-	ProcessorEvents string = "events"
-	ProcessorLegacy        = "legacy"
+	ProcessorEvents              string = "events"
+	ProcessorLegacy                     = "legacy"
+	DefaultClientUpdateThreshold        = 0 * time.Millisecond
 )
 
 // StartRelayer starts the main relaying loop and returns a channel that will contain any control-flow related errors.
@@ -34,6 +35,7 @@ func StartRelayer(
 	paths []NamedPath,
 	maxTxSize, maxMsgLength uint64,
 	memo string,
+	clientUpdateThresholdTime time.Duration,
 	processorType string,
 	initialBlockHistory uint64,
 	metrics *processor.PrometheusMetrics,
@@ -68,7 +70,7 @@ func StartRelayer(
 			}
 		}
 
-		go relayerStartEventProcessor(ctx, log, chainProcessors, ePaths, initialBlockHistory, maxTxSize, maxMsgLength, memo, errorChan, metrics)
+		go relayerStartEventProcessor(ctx, log, chainProcessors, ePaths, initialBlockHistory, maxTxSize, maxMsgLength, memo, clientUpdateThresholdTime, errorChan, metrics)
 		return errorChan
 	case ProcessorLegacy:
 		if len(paths) != 1 {
@@ -113,6 +115,7 @@ func relayerStartEventProcessor(
 	maxTxSize,
 	maxMsgLength uint64,
 	memo string,
+	clientUpdateThresholdTime time.Duration,
 	errCh chan<- error,
 	metrics *processor.PrometheusMetrics,
 ) {
@@ -128,6 +131,7 @@ func relayerStartEventProcessor(
 				p.dst,
 				metrics,
 				memo,
+				clientUpdateThresholdTime,
 			))
 	}
 
@@ -286,7 +290,7 @@ func filterOpenChannels(channels []*types.IdentifiedChannel) map[string]*ActiveC
 // channels to relay on.
 func applyChannelFilterRule(filter ChannelFilter, channels []*types.IdentifiedChannel) []*types.IdentifiedChannel {
 	switch filter.Rule {
-	case allowList:
+	case processor.RuleAllowList:
 		var filteredChans []*types.IdentifiedChannel
 		for _, c := range channels {
 			if filter.InChannelList(c.ChannelId) {
@@ -294,7 +298,7 @@ func applyChannelFilterRule(filter ChannelFilter, channels []*types.IdentifiedCh
 			}
 		}
 		return filteredChans
-	case denyList:
+	case processor.RuleDenyList:
 		var filteredChans []*types.IdentifiedChannel
 		for _, c := range channels {
 			if filter.InChannelList(c.ChannelId) {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,15 +16,17 @@ import (
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
-	transfertypes "github.com/cosmos/ibc-go/v5/modules/apps/transfer/types"
-	clienttypes "github.com/cosmos/ibc-go/v5/modules/core/02-client/types"
-	conntypes "github.com/cosmos/ibc-go/v5/modules/core/03-connection/types"
-	chantypes "github.com/cosmos/ibc-go/v5/modules/core/04-channel/types"
-	commitmenttypes "github.com/cosmos/ibc-go/v5/modules/core/23-commitment/types"
-	host "github.com/cosmos/ibc-go/v5/modules/core/24-host"
-	ibcexported "github.com/cosmos/ibc-go/v5/modules/core/exported"
-	tmclient "github.com/cosmos/ibc-go/v5/modules/light-clients/07-tendermint/types"
+	transfertypes "github.com/cosmos/ibc-go/v7/modules/apps/transfer/types"
+	clienttypes "github.com/cosmos/ibc-go/v7/modules/core/02-client/types"
+	conntypes "github.com/cosmos/ibc-go/v7/modules/core/03-connection/types"
+	chantypes "github.com/cosmos/ibc-go/v7/modules/core/04-channel/types"
+	commitmenttypes "github.com/cosmos/ibc-go/v7/modules/core/23-commitment/types"
+	host "github.com/cosmos/ibc-go/v7/modules/core/24-host"
+	ibcexported "github.com/cosmos/ibc-go/v7/modules/core/exported"
+	tmclient "github.com/cosmos/ibc-go/v7/modules/light-clients/07-tendermint"
+	strideicqtypes "github.com/cosmos/relayer/v2/relayer/chains/cosmos/stride"
 	"github.com/cosmos/relayer/v2/relayer/provider"
+	abci "github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/light"
 	tmtypes "github.com/tendermint/tendermint/types"
 	"go.uber.org/zap"
@@ -34,6 +38,7 @@ var (
 	rtyAtt    = retry.Attempts(rtyAttNum)
 	rtyDel    = retry.Delay(time.Millisecond * 400)
 	rtyErr    = retry.LastErrorOnly(true)
+	numRegex  = regexp.MustCompile("[0-9]+")
 )
 
 // Default IBC settings
@@ -74,11 +79,22 @@ func (cc *CosmosProvider) SendMessages(ctx context.Context, msgs []provider.Rela
 	var resp *sdk.TxResponse
 	var fees sdk.Coins
 
+	// Guard against account sequence number mismatch errors by locking for the specific wallet for
+	// the account sequence query all the way through the transaction broadcast success/fail.
+	cc.txMu.Lock()
+	defer cc.txMu.Unlock()
+
 	if err := retry.Do(func() error {
-		txBytes, f, err := cc.buildMessages(ctx, msgs, memo)
+		txBytes, sequence, f, err := cc.buildMessages(ctx, msgs, memo)
 		fees = f
 		if err != nil {
 			errMsg := err.Error()
+
+			// Account sequence mismatch errors can happen on the simulated transaction also.
+			if strings.Contains(errMsg, sdkerrors.ErrWrongSequence.Error()) {
+				cc.handleAccountSequenceMismatchError(err)
+				return err
+			}
 
 			// Occasionally the client will be out of date,
 			// and we will receive an RPC error like:
@@ -146,15 +162,17 @@ func (cc *CosmosProvider) SendMessages(ctx context.Context, msgs []provider.Rela
 
 		resp, err = cc.BroadcastTx(ctx, txBytes)
 		if err != nil {
-			if err == sdkerrors.ErrWrongSequence {
-				// Allow retrying if we got an invalid sequence error when attempting to broadcast this tx.
+			if strings.Contains(err.Error(), sdkerrors.ErrWrongSequence.Error()) {
+				cc.handleAccountSequenceMismatchError(err)
 				return err
 			}
 
 			// Don't retry if BroadcastTx resulted in any other error.
-			// (This was the previous behavior. Unclear if that is still desired.)
 			return retry.Unrecoverable(err)
 		}
+
+		// we had a successful tx with this sequence, so update it to the next
+		cc.updateNextAccountSequence(sequence + 1)
 
 		return nil
 	}, retry.Context(ctx), rtyAtt, rtyDel, rtyErr, retry.OnRetry(func(n uint, err error) {
@@ -214,11 +232,11 @@ func parseEventsFromTxResponse(resp *sdk.TxResponse) []provider.RelayerEvent {
 	return events
 }
 
-func (cc *CosmosProvider) buildMessages(ctx context.Context, msgs []provider.RelayerMessage, memo string) ([]byte, sdk.Coins, error) {
+func (cc *CosmosProvider) buildMessages(ctx context.Context, msgs []provider.RelayerMessage, memo string) ([]byte, uint64, sdk.Coins, error) {
 	// Query account details
 	txf, err := cc.PrepareFactory(cc.TxFactory())
 	if err != nil {
-		return nil, sdk.Coins{}, err
+		return nil, 0, sdk.Coins{}, err
 	}
 
 	if memo != "" {
@@ -231,7 +249,7 @@ func (cc *CosmosProvider) buildMessages(ctx context.Context, msgs []provider.Rel
 	// If users pass gas adjustment, then calculate gas
 	_, adjusted, err := cc.CalculateGas(ctx, txf, CosmosMsgs(msgs...)...)
 	if err != nil {
-		return nil, sdk.Coins{}, err
+		return nil, 0, sdk.Coins{}, err
 	}
 
 	// Set the gas amount on the transaction factory
@@ -246,13 +264,7 @@ func (cc *CosmosProvider) buildMessages(ctx context.Context, msgs []provider.Rel
 		}
 		return nil
 	}, retry.Context(ctx), rtyAtt, rtyDel, rtyErr); err != nil {
-		return nil, sdk.Coins{}, err
-	}
-
-	// Attach the signature to the transaction
-	// Force encoding in the chain specific address
-	for _, msg := range msgs {
-		cc.Codec.Marshaler.MustMarshalJSON(CosmosMsg(msg))
+		return nil, 0, sdk.Coins{}, err
 	}
 
 	done := cc.SetSDKContext()
@@ -263,27 +275,43 @@ func (cc *CosmosProvider) buildMessages(ctx context.Context, msgs []provider.Rel
 		}
 		return nil
 	}, retry.Context(ctx), rtyAtt, rtyDel, rtyErr); err != nil {
-		return nil, sdk.Coins{}, err
+		return nil, 0, sdk.Coins{}, err
 	}
 
 	done()
 
-	fees := txb.GetTx().GetFee()
+	tx := txb.GetTx()
+	fees := tx.GetFee()
 
 	var txBytes []byte
 	// Generate the transaction bytes
 	if err := retry.Do(func() error {
 		var err error
-		txBytes, err = cc.Codec.TxConfig.TxEncoder()(txb.GetTx())
+		txBytes, err = cc.Codec.TxConfig.TxEncoder()(tx)
 		if err != nil {
 			return err
 		}
 		return nil
 	}, retry.Context(ctx), rtyAtt, rtyDel, rtyErr); err != nil {
-		return nil, sdk.Coins{}, err
+		return nil, 0, sdk.Coins{}, err
 	}
 
-	return txBytes, fees, nil
+	return txBytes, txf.Sequence(), fees, nil
+}
+
+// handleAccountSequenceMismatchError will parse the error string, e.g.:
+// "account sequence mismatch, expected 10, got 9: incorrect account sequence"
+// and update the next account sequence with the expected value.
+func (cc *CosmosProvider) handleAccountSequenceMismatchError(err error) {
+	sequences := numRegex.FindAllString(err.Error(), -1)
+	if len(sequences) != 2 {
+		return
+	}
+	nextSeq, err := strconv.ParseUint(sequences[0], 10, 64)
+	if err != nil {
+		return
+	}
+	cc.nextAccountSeq = nextSeq
 }
 
 // MsgCreateClient creates an sdk.Msg to update the client on src with consensus state from dst
@@ -315,23 +343,21 @@ func (cc *CosmosProvider) MsgCreateClient(
 	return NewCosmosMessage(msg), nil
 }
 
-func (cc *CosmosProvider) MsgUpdateClient(srcClientId string, dstHeader ibcexported.Header) (provider.RelayerMessage, error) {
+func (cc *CosmosProvider) MsgUpdateClient(srcClientID string, dstHeader ibcexported.ClientMessage) (provider.RelayerMessage, error) {
 	acc, err := cc.Address()
 	if err != nil {
 		return nil, err
 	}
 
-	anyHeader, err := clienttypes.PackHeader(dstHeader)
+	clientMsg, err := clienttypes.PackClientMessage(dstHeader)
 	if err != nil {
 		return nil, err
 	}
-
 	msg := &clienttypes.MsgUpdateClient{
-		ClientId: srcClientId,
-		Header:   anyHeader,
-		Signer:   acc,
+		ClientId:      srcClientID,
+		ClientMessage: clientMsg,
+		Signer:        acc,
 	}
-
 	return NewCosmosMessage(msg), nil
 }
 
@@ -567,7 +593,7 @@ func (cc *CosmosProvider) MsgConnectionOpenInit(info provider.ConnectionInfo, pr
 		Counterparty: conntypes.Counterparty{
 			ClientId:     info.CounterpartyClientID,
 			ConnectionId: "",
-			Prefix:       defaultChainPrefix,
+			Prefix:       info.CounterpartyCommitmentPrefix,
 		},
 		Version:     nil,
 		DelayPeriod: defaultDelayPeriod,
@@ -834,7 +860,7 @@ func (cc *CosmosProvider) MsgChannelCloseConfirm(msgCloseInit provider.ChannelIn
 	return NewCosmosMessage(msg), nil
 }
 
-func (cc *CosmosProvider) MsgUpdateClientHeader(latestHeader provider.IBCHeader, trustedHeight clienttypes.Height, trustedHeader provider.IBCHeader) (ibcexported.Header, error) {
+func (cc *CosmosProvider) MsgUpdateClientHeader(latestHeader provider.IBCHeader, trustedHeight clienttypes.Height, trustedHeader provider.IBCHeader) (ibcexported.ClientMessage, error) {
 	trustedCosmosHeader, ok := trustedHeader.(CosmosIBCHeader)
 	if !ok {
 		return nil, fmt.Errorf("unsupported IBC trusted header type, expected: CosmosIBCHeader, actual: %T", trustedHeader)
@@ -863,6 +889,43 @@ func (cc *CosmosProvider) MsgUpdateClientHeader(latestHeader provider.IBCHeader,
 		TrustedValidators: trustedValidatorsProto,
 		TrustedHeight:     trustedHeight,
 	}, nil
+}
+
+func (cc *CosmosProvider) QueryICQWithProof(ctx context.Context, path string, request []byte, height uint64) (provider.ICQProof, error) {
+	slashSplit := strings.Split(path, "/")
+	req := abci.RequestQuery{
+		Path:   path,
+		Height: int64(height),
+		Data:   request,
+		Prove:  slashSplit[len(slashSplit)-1] == "key",
+	}
+
+	res, err := cc.QueryABCI(ctx, req)
+	if err != nil {
+		return provider.ICQProof{}, fmt.Errorf("failed to execute interchain query: %w", err)
+	}
+	return provider.ICQProof{
+		Result:   res.Value,
+		ProofOps: res.ProofOps,
+		Height:   res.Height,
+	}, nil
+}
+
+func (cc *CosmosProvider) MsgSubmitQueryResponse(chainID string, queryID provider.ClientICQQueryID, proof provider.ICQProof) (provider.RelayerMessage, error) {
+	signer, err := cc.Address()
+	if err != nil {
+		return nil, err
+	}
+	msg := &strideicqtypes.MsgSubmitQueryResponse{
+		ChainId:     chainID,
+		QueryId:     string(queryID),
+		Result:      proof.Result,
+		ProofOps:    proof.ProofOps,
+		Height:      proof.Height,
+		FromAddress: signer,
+	}
+
+	return NewCosmosMessage(msg), nil
 }
 
 // RelayPacketFromSequence relays a packet with a given seq on src and returns recvPacket msgs, timeoutPacketmsgs and error
@@ -974,7 +1037,7 @@ func (cc *CosmosProvider) QueryIBCHeader(ctx context.Context, h int64) (provider
 // TrustedHeight is the latest height of the IBC client on dst
 // TrustedValidators is the validator set of srcChain at the TrustedHeight
 // InjectTrustedFields returns a copy of the header with TrustedFields modified
-func (cc *CosmosProvider) InjectTrustedFields(ctx context.Context, header ibcexported.Header, dst provider.ChainProvider, dstClientId string) (ibcexported.Header, error) {
+func (cc *CosmosProvider) InjectTrustedFields(ctx context.Context, header ibcexported.ClientMessage, dst provider.ChainProvider, dstClientId string) (ibcexported.ClientMessage, error) {
 	// make copy of header stored in mop
 	h, ok := header.(*tmclient.Header)
 	if !ok {
@@ -1051,7 +1114,7 @@ func castClientStateToTMType(cs *codectypes.Any) (*tmclient.ClientState, error) 
 	return clientState, nil
 }
 
-//DefaultUpgradePath is the default IBC upgrade path set for an on-chain light client
+// DefaultUpgradePath is the default IBC upgrade path set for an on-chain light client
 var defaultUpgradePath = []string{"upgrade", "upgradedIBCState"}
 
 // NewClientState creates a new tendermint client state tracking the dst chain.

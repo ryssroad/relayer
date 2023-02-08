@@ -6,7 +6,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -38,25 +38,39 @@ func startCmd(a *appState) *cobra.Command {
 		Use:     "start path_name",
 		Aliases: []string{"st"},
 		Short:   "Start the listening relayer on a given path",
-		Args:    withUsage(cobra.MinimumNArgs(1)),
+		Args:    withUsage(cobra.MinimumNArgs(0)),
 		Example: strings.TrimSpace(fmt.Sprintf(`
-$ %s start demo-path -p events # to use event processor
+$ %s start           # start all configured paths
+$ %s start demo-path # start the 'demo-path' path
 $ %s start demo-path --max-msgs 3
-$ %s start demo-path2 --max-tx-size 10`, appName, appName, appName)),
+$ %s start demo-path2 --max-tx-size 10`, appName, appName, appName, appName)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			chains := make(map[string]*relayer.Chain)
 			paths := make([]relayer.NamedPath, len(args))
 
-			for i, pathName := range args {
-				path := a.Config.Paths.MustGet(pathName)
-				paths[i] = relayer.NamedPath{
-					Name: pathName,
-					Path: path,
-				}
+			if len(args) > 0 {
+				for i, pathName := range args {
+					path := a.Config.Paths.MustGet(pathName)
+					paths[i] = relayer.NamedPath{
+						Name: pathName,
+						Path: path,
+					}
 
-				// collect unique chain IDs
-				chains[path.Src.ChainID] = nil
-				chains[path.Dst.ChainID] = nil
+					// collect unique chain IDs
+					chains[path.Src.ChainID] = nil
+					chains[path.Dst.ChainID] = nil
+				}
+			} else {
+				for n, path := range a.Config.Paths {
+					paths = append(paths, relayer.NamedPath{
+						Name: n,
+						Path: path,
+					})
+
+					// collect unique chain IDs
+					chains[path.Src.ChainID] = nil
+					chains[path.Dst.ChainID] = nil
+				}
 			}
 
 			chainIDs := make([]string, 0, len(chains))
@@ -95,8 +109,8 @@ $ %s start demo-path2 --max-tx-size 10`, appName, appName, appName)),
 				}
 				log := a.Log.With(zap.String("sys", "debughttp"))
 				log.Info("Debug server listening", zap.String("addr", debugAddr))
-				relaydebug.StartDebugServer(cmd.Context(), log, ln)
 				prometheusMetrics = processor.NewPrometheusMetrics()
+				relaydebug.StartDebugServer(cmd.Context(), log, ln, prometheusMetrics.Registry)
 				for _, chain := range chains {
 					if ccp, ok := chain.ChainProvider.(*cosmos.CosmosProvider); ok {
 						ccp.SetMetrics(prometheusMetrics)
@@ -113,6 +127,11 @@ $ %s start demo-path2 --max-tx-size 10`, appName, appName, appName)),
 				return err
 			}
 
+			clientUpdateThresholdTime, err := cmd.Flags().GetDuration(flagThresholdTime)
+			if err != nil {
+				return err
+			}
+
 			rlyErrCh := relayer.StartRelayer(
 				cmd.Context(),
 				a.Log,
@@ -120,6 +139,7 @@ $ %s start demo-path2 --max-tx-size 10`, appName, appName, appName)),
 				paths,
 				maxTxSize, maxMsgLength,
 				a.Config.memo(cmd),
+				clientUpdateThresholdTime,
 				processorType, initialBlockHistory,
 				prometheusMetrics,
 			)

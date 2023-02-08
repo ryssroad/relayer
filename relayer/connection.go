@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	conntypes "github.com/cosmos/ibc-go/v5/modules/core/03-connection/types"
+	conntypes "github.com/cosmos/ibc-go/v7/modules/core/03-connection/types"
 	"github.com/cosmos/relayer/v2/relayer/processor"
 	"github.com/cosmos/relayer/v2/relayer/provider"
 	"go.uber.org/zap"
@@ -38,6 +38,7 @@ func (c *Chain) CreateOpenConnections(
 		processor.NewPathEnd(pathName, dst.PathEnd.ChainID, dst.PathEnd.ClientID, "", []processor.ChainChannelKey{}),
 		nil,
 		memo,
+		DefaultClientUpdateThreshold,
 	)
 
 	var connectionSrc, connectionDst string
@@ -68,16 +69,18 @@ func (c *Chain) CreateOpenConnections(
 				ChainID:   c.PathEnd.ChainID,
 				EventType: conntypes.EventTypeConnectionOpenInit,
 				Info: provider.ConnectionInfo{
-					ClientID:             c.PathEnd.ClientID,
-					CounterpartyClientID: dst.PathEnd.ClientID,
+					ClientID:                     c.PathEnd.ClientID,
+					CounterpartyClientID:         dst.PathEnd.ClientID,
+					CounterpartyCommitmentPrefix: dst.ChainProvider.CommitmentPrefix(),
 				},
 			},
 			Termination: &processor.ConnectionMessage{
 				ChainID:   dst.PathEnd.ChainID,
 				EventType: conntypes.EventTypeConnectionOpenConfirm,
 				Info: provider.ConnectionInfo{
-					ClientID:             dst.PathEnd.ClientID,
-					CounterpartyClientID: c.PathEnd.ClientID,
+					ClientID:                     dst.PathEnd.ClientID,
+					CounterpartyClientID:         c.PathEnd.ClientID,
+					CounterpartyCommitmentPrefix: c.ChainProvider.CommitmentPrefix(),
 				},
 			},
 		}).

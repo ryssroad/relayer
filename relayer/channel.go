@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	chantypes "github.com/cosmos/ibc-go/v5/modules/core/04-channel/types"
-	host "github.com/cosmos/ibc-go/v5/modules/core/24-host"
+	chantypes "github.com/cosmos/ibc-go/v7/modules/core/04-channel/types"
+	host "github.com/cosmos/ibc-go/v7/modules/core/24-host"
 	"github.com/cosmos/relayer/v2/relayer/processor"
 	"github.com/cosmos/relayer/v2/relayer/provider"
 	"go.uber.org/zap"
@@ -57,6 +57,7 @@ func (c *Chain) CreateOpenChannels(
 		processor.NewPathEnd(pathName, dst.PathEnd.ChainID, dst.PathEnd.ClientID, "", []processor.ChainChannelKey{}),
 		nil,
 		memo,
+		DefaultClientUpdateThreshold,
 	)
 
 	c.log.Info("Starting event processor for channel handshake",
@@ -126,6 +127,7 @@ func (c *Chain) CloseChannel(
 			processor.NewPathEnd(pathName, dst.PathEnd.ChainID, dst.PathEnd.ClientID, "", []processor.ChainChannelKey{}),
 			nil,
 			memo,
+			DefaultClientUpdateThreshold,
 		)).
 		WithInitialBlockHistory(0).
 		WithMessageLifecycle(&processor.ChannelMessageLifecycle{

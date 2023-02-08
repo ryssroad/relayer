@@ -7,7 +7,7 @@ import (
 
 	"github.com/avast/retry-go/v4"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	chantypes "github.com/cosmos/ibc-go/v5/modules/core/04-channel/types"
+	chantypes "github.com/cosmos/ibc-go/v7/modules/core/04-channel/types"
 	"github.com/cosmos/relayer/v2/relayer"
 	"github.com/cosmos/relayer/v2/relayer/provider"
 	"github.com/spf13/cobra"
@@ -712,6 +712,10 @@ $ %s tx link-then-start demo-path --timeout 5s`, appName, appName)),
 	cmd = channelParameterFlags(a.Viper, cmd)
 	cmd = overrideFlag(a.Viper, cmd)
 	cmd = memoFlag(a.Viper, cmd)
+	cmd = debugServerFlags(a.Viper, cmd)
+	cmd = initBlockFlag(a.Viper, cmd)
+	cmd = processorFlag(a.Viper, cmd)
+	cmd = updateTimeFlags(a.Viper, cmd)
 	return cmd
 }
 
