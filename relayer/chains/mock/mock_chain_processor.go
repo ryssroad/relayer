@@ -39,7 +39,7 @@ type TransactionMessage struct {
 	PacketInfo *chantypes.Packet
 }
 
-func NewMockChainProcessor(log *zap.Logger, chainID string, getMockMessages func() []TransactionMessage) *MockChainProcessor {
+func NewMockChainProcessor(ctx context.Context, log *zap.Logger, chainID string, getMockMessages func() []TransactionMessage) *MockChainProcessor {
 	chainProviderCfg := cosmos.CosmosProviderConfig{
 		Key:            "mock-key",
 		ChainID:        chainID,
@@ -48,6 +48,7 @@ func NewMockChainProcessor(log *zap.Logger, chainID string, getMockMessages func
 		Timeout:        "10s",
 	}
 	chainProvider, _ := chainProviderCfg.NewProvider(zap.NewNop(), "/tmp", true, "mock-chain-name-"+chainID)
+	_ = chainProvider.Init(ctx)
 	_, _ = chainProvider.AddKey(chainProvider.Key(), 118)
 	return &MockChainProcessor{
 		log:             log,
@@ -90,6 +91,8 @@ func (mcp *MockChainProcessor) Run(ctx context.Context, initialBlockHistory uint
 	mcp.log.Info("entering main query loop", zap.String("chain_id", mcp.chainID))
 
 	ticker := time.NewTicker(minQueryLoopDuration)
+	defer ticker.Stop()
+
 	// QueryLoop:
 	for {
 		mcp.queryCycle(ctx, &persistence)

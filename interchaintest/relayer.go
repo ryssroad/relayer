@@ -14,6 +14,7 @@ import (
 	"github.com/cosmos/relayer/v2/internal/relayertest"
 	"github.com/cosmos/relayer/v2/relayer"
 	"github.com/cosmos/relayer/v2/relayer/chains/cosmos"
+	"github.com/cosmos/relayer/v2/relayer/provider"
 	interchaintestcosmos "github.com/strangelove-ventures/interchaintest/v7/chain/cosmos"
 	"github.com/strangelove-ventures/interchaintest/v7/ibc"
 	"github.com/stretchr/testify/require"
@@ -77,6 +78,7 @@ func (r *Relayer) AddChainConfiguration(ctx context.Context, _ ibc.RelayerExecRe
 			Timeout:      "10s",
 			OutputFormat: "json",
 			SignModeStr:  "direct",
+			Broadcast:    provider.BroadcastModeBatch,
 		},
 	})
 
@@ -314,16 +316,15 @@ func (r *Relayer) Exec(ctx context.Context, _ ibc.RelayerExecReporter, cmd, env 
 	}
 }
 
-func (r *Relayer) FlushAcknowledgements(ctx context.Context, _ ibc.RelayerExecReporter, pathName string, channelID string) error {
-	res := r.sys().RunC(ctx, r.log(), "tx", "relay-acks", pathName, channelID)
-	if res.Err != nil {
-		return res.Err
+func (r *Relayer) Flush(ctx context.Context, _ ibc.RelayerExecReporter, pathName string, channelID string) error {
+	cmd := []string{"tx", "flush"}
+	if pathName != "" {
+		cmd = append(cmd, pathName)
+		if channelID != "" {
+			cmd = append(cmd, channelID)
+		}
 	}
-	return nil
-}
-
-func (r *Relayer) FlushPackets(ctx context.Context, _ ibc.RelayerExecReporter, pathName string, channelID string) error {
-	res := r.sys().RunC(ctx, r.log(), "tx", "relay-pkts", pathName, channelID)
+	res := r.sys().RunC(ctx, r.log(), cmd...)
 	if res.Err != nil {
 		return res.Err
 	}

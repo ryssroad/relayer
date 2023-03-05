@@ -59,13 +59,14 @@ func TestMockChainAndPathProcessors(t *testing.T) {
 	metrics := processor.NewPrometheusMetrics()
 
 	clientUpdateThresholdTime := 6 * time.Hour
+	flushInterval := 6 * time.Hour
 
-	pathProcessor := processor.NewPathProcessor(log, pathEnd1, pathEnd2, metrics, "", clientUpdateThresholdTime)
+	pathProcessor := processor.NewPathProcessor(log, pathEnd1, pathEnd2, metrics, "", clientUpdateThresholdTime, flushInterval)
 
 	eventProcessor := processor.NewEventProcessor().
 		WithChainProcessors(
-			mock.NewMockChainProcessor(log, mockChainID1, getMockMessages1),
-			mock.NewMockChainProcessor(log, mockChainID2, getMockMessages2),
+			mock.NewMockChainProcessor(ctx, log, mockChainID1, getMockMessages1),
+			mock.NewMockChainProcessor(ctx, log, mockChainID2, getMockMessages2),
 		).
 		WithInitialBlockHistory(100).
 		WithPathProcessors(pathProcessor).

@@ -44,6 +44,7 @@ const (
 	flagReverse                 = "reverse"
 	flagProcessor               = "processor"
 	flagInitialBlockHistory     = "block-history"
+	flagFlushInterval           = "flush-interval"
 	flagMemo                    = "memo"
 	flagFilterRule              = "filter-rule"
 	flagFilterChannels          = "filter-channels"
@@ -332,7 +333,7 @@ func dstPortFlag(v *viper.Viper, cmd *cobra.Command) *cobra.Command {
 }
 
 func debugServerFlags(v *viper.Viper, cmd *cobra.Command) *cobra.Command {
-	cmd.Flags().String(flagDebugAddr, defaultDebugAddr, "address to use for debug server. Set empty to disable debug server.")
+	cmd.Flags().String(flagDebugAddr, "", "address to use for debug and metrics server. By default, will be the api-listen-addr parameter in the global config.")
 	if err := v.BindPFlag(flagDebugAddr, cmd.Flags().Lookup(flagDebugAddr)); err != nil {
 		panic(err)
 	}
@@ -350,6 +351,14 @@ func processorFlag(v *viper.Viper, cmd *cobra.Command) *cobra.Command {
 func initBlockFlag(v *viper.Viper, cmd *cobra.Command) *cobra.Command {
 	cmd.Flags().Uint64P(flagInitialBlockHistory, "b", 20, "initial block history to query when using 'events' as the processor for relaying")
 	if err := v.BindPFlag(flagInitialBlockHistory, cmd.Flags().Lookup(flagInitialBlockHistory)); err != nil {
+		panic(err)
+	}
+	return cmd
+}
+
+func flushIntervalFlag(v *viper.Viper, cmd *cobra.Command) *cobra.Command {
+	cmd.Flags().DurationP(flagFlushInterval, "i", relayer.DefaultFlushInterval, "how frequently should a flush routine be run")
+	if err := v.BindPFlag(flagFlushInterval, cmd.Flags().Lookup(flagFlushInterval)); err != nil {
 		panic(err)
 	}
 	return cmd
